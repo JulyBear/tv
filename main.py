@@ -1,85 +1,48 @@
 
 import requests
 import re
-import concurrent.futures
-import time
-import random
 
-# 1. 究极资源池：涵盖 IPv4/IPv6，包含 CCTV 4K 及各省卫视
+# 精选成品源（这些源本身就是有人维护的，质量很高）
 RAW_SOURCES = [
     "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u",
-    "https://raw.githubusercontent.com/ssili126/tv/main/itvlist.m3u",
-    "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u",
-    "https://raw.githubusercontent.com/Guoverse/tv-list/main/m3u/index.m3u",
-    "https://raw.githubusercontent.com/vbskycn/iptv/master/tvguide.m3u",
-    "https://raw.githubusercontent.com/joevess/IPTV/main/sources/iptv_sources.m3u",
-    "http://120.79.4.185/new/mdlive.m3u",
-    "https://raw.githubusercontent.com/Supprise0901/TVBox_yuan/main/tv/m3u/ipv6.m3u"
+    "https://raw.githubusercontent.com/ssili126/tv/main/itvlist.m3u"
 ]
 
-# 模拟真实浏览器
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-]
-
-def is_target_channel(name):
-    """精准过滤：只保留央视全家桶和各省卫视"""
-    name = name.upper().replace("-", "").replace(" ", "")
-    # 封杀外语和无关频道
-    if any(x in name for x in ["CGTN", "外语", "国际", "CHC", "影视", "数字", "广播"]):
-        return False
-    # 锁定目标
-    if "CCTV" in name or "卫视" in name:
-        return True
-    return False
-
-def check_url(name, url):
-    """轻量化测速：确认链接是否可达"""
-    try:
-        header = {
-            'User-Agent': random.choice(USER_AGENTS),
-            'Connection': 'keep-alive'
-        }
-        # 使用 HEAD 请求，对服务器最友好，不容易被 Ban
-        response = requests.head(url, timeout=5, headers=header, verify=False, allow_redirects=True)
-        if response.status_code == 200:
-            return f"#EXTINF:-1,{name}\n{url}\n"
-    except:
-        pass
-    return None
-
-def fetch_and_parse():
-    """多源抓取并解析"""
-    target_channels = []
-    print("--- 开始抓取云端原始数据 ---")
-    for src_url in RAW_SOURCES:
+def fetch():
+    output = []
+    # 模拟浏览器，防止被屏蔽
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    for url in RAW_SOURCES:
         try:
-            header = {'User-Agent': random.choice(USER_AGENTS), 'Referer': 'https://github.com/'}
-            # 随机避让，模拟人工
-            time.sleep(random.uniform(0.5, 1.5))
-            r = requests.get(src_url, timeout=15, headers=header, verify=False)
+            r = requests.get(url, timeout=20, headers=headers)
             if r.status_code == 200:
-                # 兼容性正则：处理各种怪异的 M3U 换行和属性
-                matches = re.findall(r'#EXTINF:.*?,(.*?)\n(http.*?)(?:\n|$)', r.text)
-                count = 0
-                for name, url in matches:
-                    clean_name = name.strip()
-                    if is_target_channel(clean_name):
-                        target_channels.append((clean_name, url.strip()))
-                        count += 1
-                print(f"源 {src_url[:40]}... 解析成功，提取 {count} 个目标")
+                # 兼容多种格式的正则
+                lines = r.text.split('\n')
+                for i in range(len(lines)):
+                    if "#EXTINF" in lines[i]:
+                        name = lines[i].split(',')[-1].strip().upper()
+                        # 核心筛选逻辑：只要央视和卫视，排除无关频道
+                        if ("CCTV" in name or "卫视" in name) and not any(x in name for x in ["CGTN", "国际", "外语"]):
+                            # 获取下一行的 URL
+                            if i + 1 < len(lines) and lines[i+1].startswith('http'):
+                                output.append(f"#EXTINF:-1,{name}\n{lines[i+1].strip()}\n")
         except Exception as e:
-            print(f"源 {src_url[:40]}... 抓取失败: {e}")
-            
-    return list(set(target_channels))
+            print(f"抓取失败 {url}: {e}")
+    return list(set(output)) # 去重
 
 def main():
-    raw_list = fetch_and_parse()
-    print(f"\n--- 筛选完成，共有 {len(raw_list)} 个候选频道等待测速 ---")
+    print("开始生成列表...")
+    channels = fetch()
     
-    valid_list = []
-    if raw_list:
-        # 并发探测，控制在 30 线程防止压力过载
-        with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
-            futures =
+    # 排序：央视排在最前
+    channels.sort(key=lambda x: (not "CCTV" in x.split(',')[1], x))
+    
+    with open("live.m3u", "w", encoding="utf-8") as f:
+        f.write("#EXTM3U\n")
+        for c in channels:
+            f.write(c)
+    print(f"完成！共抓取到 {len(channels)} 个频道。")
+
+if __name__ == "__main__":
+    main()
