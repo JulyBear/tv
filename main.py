@@ -2,37 +2,47 @@
 import requests
 import re
 import concurrent.futures
+import time
+import random
 
-# 1. 扩充资源池：不仅有 GitHub，还加入了国内镜像和常用接口
+# 1. 究极资源池：涵盖 IPv4/IPv6，包含 CCTV 4K 及各省卫视
 RAW_SOURCES = [
     "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u",
     "https://raw.githubusercontent.com/ssili126/tv/main/itvlist.m3u",
     "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u",
-    "https://raw.githubusercontent.com/vbskycn/iptv/master/tvguide.m3u",
     "https://raw.githubusercontent.com/Guoverse/tv-list/main/m3u/index.m3u",
+    "https://raw.githubusercontent.com/vbskycn/iptv/master/tvguide.m3u",
     "https://raw.githubusercontent.com/joevess/IPTV/main/sources/iptv_sources.m3u",
-    "http://120.79.4.185/new/mdlive.m3u", # 国内备用接口
-    "https://raw.githubusercontent.com/Moexin/IPTV/master/IPTV.m3u",
-    "https://raw.githubusercontent.com/imool/down/main/iptv.m3u",
+    "http://120.79.4.185/new/mdlive.m3u",
     "https://raw.githubusercontent.com/Supprise0901/TVBox_yuan/main/tv/m3u/ipv6.m3u"
 ]
 
+# 模拟真实浏览器
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+]
+
 def is_target_channel(name):
+    """精准过滤：只保留央视全家桶和各省卫视"""
     name = name.upper().replace("-", "").replace(" ", "")
-    # 只要央视和卫视
-    if "CCTV" in name:
-        if any(x in name for x in ["CGTN", "外语", "国际"]): return False
-        return True
-    if "卫视" in name:
+    # 封杀外语和无关频道
+    if any(x in name for x in ["CGTN", "外语", "国际", "CHC", "影视", "数字", "广播"]):
+        return False
+    # 锁定目标
+    if "CCTV" in name or "卫视" in name:
         return True
     return False
 
 def check_url(name, url):
+    """轻量化测速：确认链接是否可达"""
     try:
-        # 增加超时到 7 秒，有些源响应慢但能播
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        # 使用 verify=False 跳过一些证书过期的错误
-        response = requests.get(url, timeout=7, stream=True, headers=headers, verify=False)
+        header = {
+            'User-Agent': random.choice(USER_AGENTS),
+            'Connection': 'keep-alive'
+        }
+        # 使用 HEAD 请求，对服务器最友好，不容易被 Ban
+        response = requests.head(url, timeout=5, headers=header, verify=False, allow_redirects=True)
         if response.status_code == 200:
             return f"#EXTINF:-1,{name}\n{url}\n"
     except:
@@ -40,54 +50,36 @@ def check_url(name, url):
     return None
 
 def fetch_and_parse():
+    """多源抓取并解析"""
     target_channels = []
-    headers = {'User-Agent': 'Mozilla/5.0'}
+    print("--- 开始抓取云端原始数据 ---")
     for src_url in RAW_SOURCES:
         try:
-            print(f"尝试抓取: {src_url}")
-            r = requests.get(src_url, timeout=10, headers=headers, verify=False)
+            header = {'User-Agent': random.choice(USER_AGENTS), 'Referer': 'https://github.com/'}
+            # 随机避让，模拟人工
+            time.sleep(random.uniform(0.5, 1.5))
+            r = requests.get(src_url, timeout=15, headers=header, verify=False)
             if r.status_code == 200:
-                # 兼容性更强的正则：匹配 #EXTINF 和 URL 之间可能有其他参数的情况
+                # 兼容性正则：处理各种怪异的 M3U 换行和属性
                 matches = re.findall(r'#EXTINF:.*?,(.*?)\n(http.*?)(?:\n|$)', r.text)
                 count = 0
                 for name, url in matches:
-                    name = name.strip()
-                    url = url.strip()
-                    if is_target_channel(name):
-                        target_channels.append((name, url))
+                    clean_name = name.strip()
+                    if is_target_channel(clean_name):
+                        target_channels.append((clean_name, url.strip()))
                         count += 1
-                print(f"成功从该源提取 {count} 个目标频道")
+                print(f"源 {src_url[:40]}... 解析成功，提取 {count} 个目标")
         except Exception as e:
-            print(f"抓取失败 {src_url}: {e}")
+            print(f"源 {src_url[:40]}... 抓取失败: {e}")
             
     return list(set(target_channels))
 
 def main():
     raw_list = fetch_and_parse()
-    print(f"总计找到 {len(raw_list)} 个候选频道，开始云端测速...")
-    
-    if not raw_list:
-        print("所有源都失效了，这通常是网络环境波动。")
-        return
+    print(f"\n--- 筛选完成，共有 {len(raw_list)} 个候选频道等待测速 ---")
     
     valid_list = []
-    # 增加线程到 100，利用 GitHub Actions 的性能暴力测速
-    with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
-        futures = [executor.submit(check_url, name, url) for name, url in raw_list]
-        for future in concurrent.futures.as_completed(futures):
-            result = future.result()
-            if result:
-                valid_list.append(result)
-
-    print(f"最终测得有效频道：{len(valid_list)} 个")
-
-    # 简单排序：CCTV 在前，卫视在后
-    valid_list.sort(key=lambda x: (not "CCTV" in x.upper(), x))
-
-    with open("live.m3u", "w", encoding="utf-8") as f:
-        f.write("#EXTM3U\n")
-        for line in valid_list:
-            f.write(line)
-
-if __name__ == "__main__":
-    main()
+    if raw_list:
+        # 并发探测，控制在 30 线程防止压力过载
+        with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+            futures =
