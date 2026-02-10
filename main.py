@@ -1,33 +1,38 @@
+
 import requests
 import re
 import concurrent.futures
 
-# 1. 资源池：这些源包含了全国最全的央视和省级卫视
+# 1. 扩充资源池：不仅有 GitHub，还加入了国内镜像和常用接口
 RAW_SOURCES = [
     "https://raw.githubusercontent.com/fanmingming/live/main/tv/m3u/ipv6.m3u",
     "https://raw.githubusercontent.com/ssili126/tv/main/itvlist.m3u",
-    "https://raw.githubusercontent.com/vbskycn/iptv/master/tvguide.m3u"
+    "https://raw.githubusercontent.com/YueChan/Live/main/IPTV.m3u",
+    "https://raw.githubusercontent.com/vbskycn/iptv/master/tvguide.m3u",
+    "https://raw.githubusercontent.com/Guoverse/tv-list/main/m3u/index.m3u",
+    "https://raw.githubusercontent.com/joevess/IPTV/main/sources/iptv_sources.m3u",
+    "http://120.79.4.185/new/mdlive.m3u", # 国内备用接口
+    "https://raw.githubusercontent.com/Moexin/IPTV/master/IPTV.m3u",
+    "https://raw.githubusercontent.com/imool/down/main/iptv.m3u",
+    "https://raw.githubusercontent.com/Supprise0901/TVBox_yuan/main/tv/m3u/ipv6.m3u"
 ]
 
 def is_target_channel(name):
-    name = name.upper()
-    # 严格过滤非中文/外语频道
-    if any(x in name for x in ["CGTN", "外语", "法文", "俄语", "西语", "阿语", "国际"]):
-        return False
-    
-    # 精准匹配：只要央视（CCTV）和各省卫视
+    name = name.upper().replace("-", "").replace(" ", "")
+    # 只要央视和卫视
     if "CCTV" in name:
+        if any(x in name for x in ["CGTN", "外语", "国际"]): return False
         return True
     if "卫视" in name:
         return True
     return False
 
 def check_url(name, url):
-    if not is_target_channel(name):
-        return None
     try:
-        # GitHub 服务器访问这些链接非常快，3秒超时足够筛选出最稳的
-        response = requests.get(url, timeout=3, stream=True)
+        # 增加超时到 7 秒，有些源响应慢但能播
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        # 使用 verify=False 跳过一些证书过期的错误
+        response = requests.get(url, timeout=7, stream=True, headers=headers, verify=False)
         if response.status_code == 200:
             return f"#EXTINF:-1,{name}\n{url}\n"
     except:
@@ -39,40 +44,45 @@ def fetch_and_parse():
     headers = {'User-Agent': 'Mozilla/5.0'}
     for src_url in RAW_SOURCES:
         try:
-            r = requests.get(src_url, timeout=10, headers=headers)
-            # 正则提取频道名和 URL
-            matches = re.findall(r'#EXTINF:.*?,(.*?)\n(http.*?)\n', r.text)
-            target_channels.extend(matches)
-        except:
-            pass
+            print(f"尝试抓取: {src_url}")
+            r = requests.get(src_url, timeout=10, headers=headers, verify=False)
+            if r.status_code == 200:
+                # 兼容性更强的正则：匹配 #EXTINF 和 URL 之间可能有其他参数的情况
+                matches = re.findall(r'#EXTINF:.*?,(.*?)\n(http.*?)(?:\n|$)', r.text)
+                count = 0
+                for name, url in matches:
+                    name = name.strip()
+                    url = url.strip()
+                    if is_target_channel(name):
+                        target_channels.append((name, url))
+                        count += 1
+                print(f"成功从该源提取 {count} 个目标频道")
+        except Exception as e:
+            print(f"抓取失败 {src_url}: {e}")
+            
     return list(set(target_channels))
 
 def main():
     raw_list = fetch_and_parse()
+    print(f"总计找到 {len(raw_list)} 个候选频道，开始云端测速...")
+    
     if not raw_list:
+        print("所有源都失效了，这通常是网络环境波动。")
         return
     
     valid_list = []
-    # 开启 50 线程云端并发检测
-    with concurrent.futures.ThreadPoolExecutor(max_workers=50) as executor:
+    # 增加线程到 100，利用 GitHub Actions 的性能暴力测速
+    with concurrent.futures.ThreadPoolExecutor(max_workers=100) as executor:
         futures = [executor.submit(check_url, name, url) for name, url in raw_list]
         for future in concurrent.futures.as_completed(futures):
             result = future.result()
             if result:
                 valid_list.append(result)
 
-    # 排序：央视（按数字）在前，卫视在后
-    def sort_key(item):
-        name = item.split(',')[1].split('\n')[0].upper()
-        if "CCTV" in name:
-            try:
-                num = re.findall(r'\d+', name)[0]
-                return (0, int(num), name)
-            except:
-                return (0, 99, name)
-        return (1, 0, name)
+    print(f"最终测得有效频道：{len(valid_list)} 个")
 
-    valid_list.sort(key=sort_key)
+    # 简单排序：CCTV 在前，卫视在后
+    valid_list.sort(key=lambda x: (not "CCTV" in x.upper(), x))
 
     with open("live.m3u", "w", encoding="utf-8") as f:
         f.write("#EXTM3U\n")
