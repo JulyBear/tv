@@ -1,8 +1,8 @@
 name: Update List
 on:
   schedule:
-    - cron: '0 20 * * *' # 每天凌晨 4 点跑一次
-  workflow_dispatch: # 让你能手动点一下
+    - cron: '0 20 * * *'
+  workflow_dispatch:
 jobs:
   run-script:
     runs-on: ubuntu-latest
@@ -14,10 +14,10 @@ jobs:
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+      - name: Install dependencies
+        run: pip install requests  # 这一步非常重要！
       - name: Run
-        run: |
-          pip install requests
-          python main.py
+        run: python main.py
       - name: Save
         run: |
           git config --global user.name "Bot"
